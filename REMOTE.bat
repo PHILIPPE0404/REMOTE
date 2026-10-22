@@ -3,8 +3,9 @@
 setlocal
 title REMOTE - Chat
 set "REMOTE_BAT=%~f0"
+set "REMOTE_MODE=%~1"
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Content -LiteralPath $env:REMOTE_BAT | Where-Object { $_.StartsWith('#CS# ') } | ForEach-Object { $_.Substring(5) }; if (-not $s) { Write-Host 'Erreur : code interne introuvable.'; exit 2 }; Add-Type -ReferencedAssemblies @('System.dll','System.Core.dll','System.Xml.dll','System.Runtime.Serialization.dll') -TypeDefinition ($s -join [Environment]::NewLine); [RemoteChat]::Run()"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$s=Get-Content -LiteralPath $env:REMOTE_BAT | Where-Object { $_.StartsWith('REM PS ') } | ForEach-Object { $_.Substring(7) }; if(-not $s){Write-Host 'Code REMOTE introuvable.'; pause; exit 2}; Invoke-Expression ($s -join [Environment]::NewLine)"
 
 if errorlevel 1 (
   echo.
@@ -13,111 +14,108 @@ if errorlevel 1 (
 )
 exit /b
 
-#CS# using System;
-#CS# using System.IO;
-#CS# using System.Text;
-#CS# using System.Net.WebSockets;
-#CS# using System.Runtime.Serialization;
-#CS# using System.Runtime.Serialization.Json;
-#CS# using System.Threading;
-#CS# using System.Threading.Tasks;
-#CS#
-#CS# [DataContract]
-#CS# public class ChatPacket {
-#CS#   [DataMember(Name="type")] public string type {get;set;}
-#CS#   [DataMember(Name="id", EmitDefaultValue=false)] public string id {get;set;}
-#CS#   [DataMember(Name="from", EmitDefaultValue=false)] public string from {get;set;}
-#CS#   [DataMember(Name="text", EmitDefaultValue=false)] public string text {get;set;}
-#CS# }
-#CS#
-#CS# public class RemoteChat {
-#CS#   static ClientWebSocket ws;
-#CS#   static readonly object sendLock = new object();
-#CS#
-#CS#   static byte[] Encode(ChatPacket p) {
-#CS#     var serializer = new DataContractJsonSerializer(typeof(ChatPacket));
-#CS#     using (var ms = new MemoryStream()) {
-#CS#       serializer.WriteObject(ms, p);
-#CS#       return ms.ToArray();
-#CS#     }
-#CS#   }
-#CS#
-#CS#   static ChatPacket Decode(byte[] b) {
-#CS#     var serializer = new DataContractJsonSerializer(typeof(ChatPacket));
-#CS#     using (var ms = new MemoryStream(b))
-#CS#       return (ChatPacket)serializer.ReadObject(ms);
-#CS#   }
-#CS#
-#CS#   static void Send(ChatPacket p) {
-#CS#     byte[] bytes = Encode(p);
-#CS#     lock (sendLock) {
-#CS#       ws.SendAsync(new ArraySegment<byte>(bytes),
-#CS#         WebSocketMessageType.Text, true, CancellationToken.None)
-#CS#         .GetAwaiter().GetResult();
-#CS#     }
-#CS#   }
-#CS#
-#CS#   static async Task Receive() {
-#CS#     byte[] buffer = new byte[4096];
-#CS#     try {
-#CS#       while (ws.State == WebSocketState.Open) {
-#CS#         using (var ms = new MemoryStream()) {
-#CS#           WebSocketReceiveResult result;
-#CS#           do {
-#CS#             result = await ws.ReceiveAsync(
-#CS#               new ArraySegment<byte>(buffer), CancellationToken.None);
-#CS#             if (result.MessageType == WebSocketMessageType.Close)
-#CS#               return;
-#CS#             ms.Write(buffer, 0, result.Count);
-#CS#             if (ms.Length > 8192) return;
-#CS#           } while (!result.EndOfMessage);
-#CS#
-#CS#           ChatPacket p = Decode(ms.ToArray());
-#CS#           if (p.type == "message")
-#CS#             Console.WriteLine("\n[" + p.from + "] " + p.text);
-#CS#         }
-#CS#       }
-#CS#     } catch (Exception ex) {
-#CS#       Console.WriteLine("\nConnexion interrompue : " + ex.Message);
-#CS#     }
-#CS#   }
-#CS#
-#CS#   public static void Run() {
-#CS#     string id = "PC-" +
-#CS#       Guid.NewGuid().ToString("N").Substring(0, 6).ToUpperInvariant();
-#CS#     ws = new ClientWebSocket();
-#CS#     try {
-#CS#       Console.WriteLine("REMOTE - Salon commun");
-#CS#       Console.WriteLine("Nom : " + id);
-#CS#       Console.WriteLine("Connexion au serveur...");
-#CS#
-#CS#       ws.ConnectAsync(
-#CS#         new Uri("wss://remote-ppij.onrender.com/ws"),
-#CS#         CancellationToken.None).GetAwaiter().GetResult();
-#CS#
-#CS#       Send(new ChatPacket { type = "join", id = id });
-#CS#       Console.WriteLine("Connecte. Tu peux discuter avec les autres.");
-#CS#       Console.WriteLine("Tape un message puis Entree. /quit pour quitter.");
-#CS#
-#CS#       Task receiver = Task.Run(async () => await Receive());
-#CS#       while (ws.State == WebSocketState.Open) {
-#CS#         string line = Console.ReadLine();
-#CS#         if (line == null || line.Trim() == "/quit") break;
-#CS#         if (line.Trim().Length == 0) continue;
-#CS#         Send(new ChatPacket { type = "message", text = line.Trim() });
-#CS#       }
-#CS#     } catch (Exception ex) {
-#CS#       Console.WriteLine("Erreur : " + ex.Message);
-#CS#       Console.WriteLine("Verifie le serveur Render et ta connexion Internet.");
-#CS#     } finally {
-#CS#       try {
-#CS#         if (ws.State == WebSocketState.Open)
-#CS#           ws.CloseAsync(WebSocketCloseStatus.NormalClosure,
-#CS#             "Fermeture", CancellationToken.None)
-#CS#             .GetAwaiter().GetResult();
-#CS#       } catch {}
-#CS#       ws.Dispose();
-#CS#       Console.WriteLine("REMOTE ferme.");
-#CS#     }
-#CS#   }
-#CS# }
+REM PS $ErrorActionPreference = 'Stop'
+REM PS $base = 'https://remote-ppij.onrender.com'
+REM PS
+REM PS function ApiPost($route, $data) {
+REM PS   $json = ConvertTo-Json -InputObject $data -Compress
+REM PS   Invoke-RestMethod -Uri ($base + $route) -Method Post -ContentType 'application/json' -Body $json
+REM PS }
+REM PS
+REM PS try {
+REM PS   $name = 'PC-' + ([Guid]::NewGuid().ToString('N').Substring(0,6).ToUpper())
+REM PS   Clear-Host
+REM PS   Write-Host '===================================='
+REM PS   Write-Host '             REMOTE CHAT'
+REM PS   Write-Host '===================================='
+REM PS   Write-Host ('Ton nom : ' + $name)
+REM PS   Write-Host 'Connexion au serveur...'
+REM PS
+REM PS   $joined = ApiPost '/api/join' @{ name = $name }
+REM PS   $token = $joined.session
+REM PS   $cursor = [long]$joined.cursor
+REM PS   $isAdmin = $false
+REM PS
+REM PS   if ($env:REMOTE_MODE -eq '/admin') {
+REM PS     $password = Read-Host 'Mot de passe administrateur'
+REM PS     $login = ApiPost '/api/admin/login' @{ session = $token; password = $password }
+REM PS     if (-not $login.admin) { throw 'Connexion administrateur refusee.' }
+REM PS     $isAdmin = $true
+REM PS     Write-Host 'Mode administrateur active.'
+REM PS   }
+REM PS
+REM PS   Write-Host ''
+REM PS   Write-Host 'Connecte au salon.'
+REM PS   Write-Host 'Entree = envoyer | /quit = quitter'
+REM PS   if ($isAdmin) { Write-Host 'Mode admin : liste des utilisateurs activee.' }
+REM PS   Write-Host ''
+REM PS
+REM PS   $line = ''
+REM PS   $lastUsers = ''
+REM PS   $lastPoll = [DateTime]::MinValue
+REM PS
+REM PS   while ($true) {
+REM PS     while ([Console]::KeyAvailable) {
+REM PS       $key = [Console]::ReadKey($true)
+REM PS       if ($key.Key -eq 'Enter') {
+REM PS         Write-Host ''
+REM PS         $text = $line.Trim()
+REM PS         $line = ''
+REM PS         if ($text -eq '/quit') { break }
+REM PS         if ($text.Length -gt 0) {
+REM PS           $null = ApiPost '/api/send' @{ session = $token; text = $text }
+REM PS         }
+REM PS       } elseif ($key.Key -eq 'Backspace') {
+REM PS         if ($line.Length -gt 0) {
+REM PS           $line = $line.Substring(0, $line.Length - 1)
+REM PS           Write-Host "`b `b" -NoNewline
+REM PS         }
+REM PS       } elseif (-not [char]::IsControl($key.KeyChar)) {
+REM PS         $line += $key.KeyChar
+REM PS         Write-Host $key.KeyChar -NoNewline
+REM PS       }
+REM PS     }
+REM PS
+REM PS     if ($text -eq '/quit') { break }
+REM PS
+REM PS     if (([DateTime]::UtcNow - $lastPoll).TotalMilliseconds -ge 1000) {
+REM PS       $url = $base + '/api/poll?session=' + $token + '&since=' + $cursor
+REM PS       $data = Invoke-RestMethod -Uri $url -Method Get
+REM PS
+REM PS       foreach ($message in $data.messages) {
+REM PS         Write-Host ''
+REM PS         Write-Host ('[' + $message.from + '] ' + $message.text)
+REM PS         if ($line.Length -gt 0) {
+REM PS           Write-Host ('> ' + $line) -NoNewline
+REM PS         }
+REM PS       }
+REM PS
+REM PS       $cursor = [long]$data.next
+REM PS
+REM PS       if ($isAdmin) {
+REM PS         $names = @($data.users | ForEach-Object { $_.name + $(if ($_.admin) { ' (admin)' } else { '' }) })
+REM PS         $signature = $names -join ', '
+REM PS         if ($signature -ne $lastUsers) {
+REM PS           Write-Host ''
+REM PS           Write-Host ('--- Utilisateurs connectes (' + $names.Count + ') ---')
+REM PS           if ($names.Count -eq 0) { Write-Host 'Aucun utilisateur.' }
+REM PS           else { foreach ($n in $names) { Write-Host (' - ' + $n) } }
+REM PS           Write-Host '--------------------------------------'
+REM PS           $lastUsers = $signature
+REM PS           if ($line.Length -gt 0) { Write-Host ('> ' + $line) -NoNewline }
+REM PS         }
+REM PS       }
+REM PS       $lastPoll = [DateTime]::UtcNow
+REM PS     }
+REM PS     Start-Sleep -Milliseconds 150
+REM PS   }
+REM PS
+REM PS   try { $null = ApiPost '/api/leave' @{ session = $token } } catch {}
+REM PS   Write-Host ''
+REM PS   Write-Host 'Deconnecte.'
+REM PS } catch {
+REM PS   Write-Host ''
+REM PS   Write-Host ('Erreur REMOTE : ' + $_.Exception.Message)
+REM PS   Write-Host 'Verifie Render, le mot de passe admin et PowerShell.'
+REM PS }
+REM PS Read-Host 'Appuie sur Entree pour fermer'
