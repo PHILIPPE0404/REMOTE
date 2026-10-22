@@ -1,102 +1,200 @@
 
 const express = require("express");
-const http = require("http");
 const path = require("path");
-const WebSocket = require("ws");
+const crypto = require("crypto");
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ noServer: true });
-const clients = new Map();
 const PORT = process.env.PORT || 10000;
+const ADMIN_PASSWORD = process.env.REMOTE_ADMIN_PASSWORD;
 
-app.get("/", (_req, res) => res.send("REMOTE chat is online."));
+app.use(express.json({ limit: "10kb" }));
+
+const sessions = new Map();
+const messages = [];
+let nextMessageId = 1;
+
+const SESSION_TIMEOUT = 60_000;
+const MAX_MESSAGES = 200;
+
+function cleanName(value) {
+  if (typeof value !== "string") return "";
+  return value.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
+}
+
+function addMessage(from, text) {
+  messages.push({
+    id: nextMessageId++,
+    from,
+    text: String(text).slice(0, 1000),
+    time: new Date().toISOString()
+  });
+
+  while (messages.length > MAX_MESSAGES) messages.shift();
+}
+
+function getSession(req) {
+  const token = req.body?.session || req.query.session;
+  if (typeof token !== "string") return null;
+
+  const session = sessions.get(token);
+  if (!session) return null;
+
+  if (Date.now() - session.lastSeen > SESSION_TIMEOUT) {
+    sessions.delete(token);
+    return null;
+  }
+
+  session.lastSeen = Date.now();
+  return session;
+}
+
+function cleanupSessions() {
+  const now = Date.now();
+
+  for (const [token, session] of sessions) {
+    if (now - session.lastSeen > SESSION_TIMEOUT) {
+      sessions.delete(token);
+      addMessage("REMOTE", session.name + " a quitte le salon.");
+    }
+  }
+}
+
+app.get("/", (_req, res) => {
+  res.type("text/plain").send("REMOTE est en ligne.");
+});
 
 app.get("/REMOTE.bat", (_req, res) => {
-  res.type("application/octet-stream");
-  res.set("Content-Disposition", 'attachment; filename="REMOTE.bat"');
-  res.sendFile(path.join(__dirname, "REMOTE.bat"));
+  res.download(path.join(__dirname, "REMOTE.bat"), "REMOTE.bat");
 });
 
-server.on("upgrade", (req, socket, head) => {
-  if (req.url !== "/ws") return socket.destroy();
-  wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws));
+app.get("/health", (_req, res) => {
+  res.json({ online: true });
 });
 
-wss.on("connection", ws => {
-  let id = null;
+app.post("/api/join", (req, res) => {
+  cleanupSessions();
 
-  ws.on("message", raw => {
-    if (raw.length > 4096) return ws.close();
+  const name = cleanName(req.body?.name);
+  if (!name) {
+    return res.status(400).json({ error: "Nom invalide." });
+  }
 
-    let data;
-    try {
-      data = JSON.parse(raw.toString());
-    } catch {
-      return;
-    }
+  const token = crypto.randomBytes(24).toString("hex");
 
-    if (!id) {
-      if (data.type !== "join" ||
-          typeof data.id !== "string" ||
-          !/^[A-Za-z0-9_-]{1,32}$/.test(data.id)) {
-        return ws.close();
-      }
+  const session = {
+    name,
+    lastSeen: Date.now(),
+    admin: false
+  };
 
-      id = data.id;
-      clients.set(id, ws);
-      ws.send(JSON.stringify({ type: "ready", id }));
+  sessions.set(token, session);
 
-      const notice = JSON.stringify({
-        type: "message",
-        from: "REMOTE",
-        text: id + " a rejoint le salon."
-      });
+  const cursor = nextMessageId - 1;
+  addMessage("REMOTE", name + " a rejoint le salon.");
 
-      for (const [otherId, client] of clients) {
-        if (otherId !== id && client.readyState === WebSocket.OPEN) {
-          client.send(notice);
-        }
-      }
-      console.log("Salon :", id);
-      return;
-    }
+  res.json({
+    ok: true,
+    session: token,
+    name,
+    cursor
+  });
+});
 
-    if (data.type !== "message" ||
-        typeof data.text !== "string" ||
-        !data.text.trim() ||
-        data.text.length > 2000) return;
+app.post("/api/admin/login", (req, res) => {
+  const session = getSession(req);
 
-    const message = JSON.stringify({
-      type: "message",
-      from: id,
-      text: data.text.trim().slice(0, 2000)
+  if (!session) {
+    return res.status(401).json({ error: "Session invalide." });
+  }
+
+  if (!ADMIN_PASSWORD) {
+    return res.status(503).json({
+      error: "Configure REMOTE_ADMIN_PASSWORD dans Render."
     });
+  }
 
-    for (const client of clients.values()) {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(message);
-      }
-    }
-  });
+  const supplied = String(req.body?.password || "");
+  const expected = String(ADMIN_PASSWORD);
 
-  ws.on("close", () => {
-    if (id && clients.get(id) === ws) {
-      clients.delete(id);
-      const notice = JSON.stringify({
-        type: "message",
-        from: "REMOTE",
-        text: id + " a quitte le salon."
-      });
-      for (const client of clients.values()) {
-        if (client.readyState === WebSocket.OPEN) client.send(notice);
-      }
-    }
-  });
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
 
-  ws.on("error", () => {});
+  const valid =
+    a.length === b.length &&
+    crypto.timingSafeEqual(a, b);
+
+  if (!valid) {
+    return res.status(403).json({ error: "Mot de passe incorrect." });
+  }
+
+  session.admin = true;
+
+  res.json({ ok: true, admin: true });
 });
 
-server.listen(PORT, "0.0.0.0", () =>
-  console.log("REMOTE chat listening on " + PORT)
-);
+app.post("/api/send", (req, res) => {
+  const session = getSession(req);
+
+  if (!session) {
+    return res.status(401).json({ error: "Session expiree. Relance REMOTE." });
+  }
+
+  if (typeof req.body?.text !== "string") {
+    return res.status(400).json({ error: "Message invalide." });
+  }
+
+  const text = req.body.text.trim();
+
+  if (!text || text.length > 1000) {
+    return res.status(400).json({
+      error: "Le message doit contenir entre 1 et 1000 caracteres."
+    });
+  }
+
+  addMessage(session.name, text);
+  res.json({ ok: true });
+});
+
+app.get("/api/poll", (req, res) => {
+  cleanupSessions();
+
+  const session = getSession(req);
+
+  if (!session) {
+    return res.status(401).json({ error: "Session expiree." });
+  }
+
+  const since = Math.max(0, Number.parseInt(req.query.since, 10) || 0);
+
+  const result = {
+    ok: true,
+    messages: messages.filter(message => message.id > since),
+    next: nextMessageId - 1
+  };
+
+  if (session.admin) {
+    result.users = Array.from(sessions.values()).map(user => ({
+      name: user.name,
+      admin: user.admin
+    }));
+  }
+
+  res.set("Cache-Control", "no-store");
+  res.json(result);
+});
+
+app.post("/api/leave", (req, res) => {
+  const token = req.body?.session;
+  const session = typeof token === "string" ? sessions.get(token) : null;
+
+  if (session) {
+    sessions.delete(token);
+    addMessage("REMOTE", session.name + " a quitte le salon.");
+  }
+
+  res.json({ ok: true });
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("REMOTE fonctionne sur le port " + PORT);
+});
