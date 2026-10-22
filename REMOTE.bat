@@ -1,10 +1,10 @@
 
 @echo off
 setlocal
-title REMOTE - Client Windows
+title REMOTE - Client
 set "REMOTE_BAT=%~f0"
 
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $lines=Get-Content -LiteralPath $env:REMOTE_BAT | Where-Object { $_.StartsWith('#CS# ') } | ForEach-Object { $_.Substring(5) }; Add-Type -AssemblyName System.Web.Extensions; Add-Type -TypeDefinition ($lines -join [Environment]::NewLine) -Language CSharp; [RemoteClient]::Run()"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "$p=Join-Path $env:TEMP 'REMOTE-runtime.ps1'; Get-Content -LiteralPath $env:REMOTE_BAT | Where-Object { $_.StartsWith('#PS# ') } | ForEach-Object { $_.Substring(5) } | Set-Content -LiteralPath $p -Encoding UTF8; & $p; $c=$LASTEXITCODE; Remove-Item $p -Force -ErrorAction SilentlyContinue; exit $c"
 
 if errorlevel 1 (
     echo.
@@ -14,112 +14,115 @@ if errorlevel 1 (
 endlocal
 exit /b
 
-#CS# using System;
-#CS# using System.Collections.Generic;
-#CS# using System.Net.WebSockets;
-#CS# using System.Text;
-#CS# using System.Threading;
-#CS# using System.Threading.Tasks;
-#CS# using System.Web.Script.Serialization;
-#CS#
-#CS# public class RemoteClient
-#CS# {
-#CS#   static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
-#CS#   static ClientWebSocket ws;
-#CS#   static string id;
-#CS#
-#CS#   static async Task Send(object value)
-#CS#   {
-#CS#     string s = Json.Serialize(value);
-#CS#     byte[] b = Encoding.UTF8.GetBytes(s);
-#CS#     await ws.SendAsync(new ArraySegment<byte>(b),
-#CS#       WebSocketMessageType.Text, true, CancellationToken.None);
-#CS#   }
-#CS#
-#CS#   static async Task Receive()
-#CS#   {
-#CS#     byte[] buffer = new byte[4096];
-#CS#     try
-#CS#     {
-#CS#       while (ws.State == WebSocketState.Open)
-#CS#       {
-#CS#         var result = new StringBuilder();
-#CS#         WebSocketReceiveResult r;
-#CS#         do
-#CS#         {
-#CS#           r = await ws.ReceiveAsync(new ArraySegment<byte>(buffer),
-#CS#             CancellationToken.None);
-#CS#           if (r.MessageType == WebSocketMessageType.Close) return;
-#CS#           result.Append(Encoding.UTF8.GetString(buffer, 0, r.Count));
-#CS#         } while (!r.EndOfMessage);
-#CS#
-#CS#         var d = Json.Deserialize<Dictionary<string, object>>(result.ToString());
-#CS#         string type = d.ContainsKey("type") ? Convert.ToString(d["type"]) : "";
-#CS#         if (type == "message")
-#CS#           Console.WriteLine("\n[" + d["from"] + "] " + d["text"]);
-#CS#         else if (type == "sent")
-#CS#           Console.WriteLine("Message envoye a " + d["to"] + ".");
-#CS#         else if (type == "error")
-#CS#           Console.WriteLine("Erreur : " + d["text"]);
-#CS#       }
-#CS#     }
-#CS#     catch (Exception e)
-#CS#     {
-#CS#       Console.WriteLine("\nConnexion interrompue : " + e.Message);
-#CS#     }
-#CS#   }
-#CS#
-#CS#   public static void Run()
-#CS#   {
-#CS#     Console.Write("URL Render (https://...): ");
-#CS#     string url = Console.ReadLine().Trim().TrimEnd('/');
-#CS#     if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-#CS#       throw new Exception("L'URL doit commencer par https://");
-#CS#
-#CS#     Console.Write("Nom de cette machine (PC1) : ");
-#CS#     id = Console.ReadLine().Trim();
-#CS#     if (!System.Text.RegularExpressions.Regex.IsMatch(id, @"^[a-zA-Z0-9_-]{1,32}$"))
-#CS#       throw new Exception("Nom de machine invalide.");
-#CS#
-#CS#     Console.Write("Secret REMOTE_TOKEN : ");
-#CS#     string token = Console.ReadLine();
-#CS#     if (String.IsNullOrWhiteSpace(token))
-#CS#       throw new Exception("Secret vide.");
-#CS#
-#CS#     Uri uri = new Uri(url);
-#CS#     if (uri.Scheme != "https" || uri.AbsolutePath != "/" || !String.IsNullOrEmpty(uri.Query))
-#CS#       throw new Exception("Entre uniquement l'URL de base de Render.");
-#CS#
-#CS#     ws = new ClientWebSocket();
-#CS#     ws.ConnectAsync(new UriBuilder(uri) {
-#CS#       Scheme = "wss", Path = "/ws"
-#CS#     }.Uri, CancellationToken.None).GetAwaiter().GetResult();
-#CS#
-#CS#     Send(new Dictionary<string, object> {
-#CS#       { "type", "auth" }, { "id", id }, { "token", token }
-#CS#     }).GetAwaiter().GetResult();
-#CS#
-#CS#     Console.WriteLine("Connecte. Attente de confirmation du serveur...");
-#CS#     Task receiver = Receive();
-#CS#
-#CS#     while (ws.State == WebSocketState.Open)
-#CS#     {
-#CS#       string line = Console.ReadLine();
-#CS#       if (line == null || line.Trim() == "/quit") break;
-#CS#       var match = System.Text.RegularExpressions.Regex.Match(
-#CS#         line, @"^/to\s+([a-zA-Z0-9_-]{1,32})\s+(.+)$");
-#CS#       if (!match.Success)
-#CS#       {
-#CS#         Console.WriteLine("Usage : /to PC2 Bonjour !");
-#CS#         continue;
-#CS#       }
-#CS#       Send(new Dictionary<string, object> {
-#CS#         { "type", "message" }, { "to", match.Groups[1].Value },
-#CS#         { "text", match.Groups[2].Value }
-#CS#       }).GetAwaiter().GetResult();
-#CS#     }
-#CS#
-#CS#     ws.Dispose();
-#CS#     receiver.GetAwaiter().GetResult();
-#CS#   }
-#CS# }
+#PS# $ErrorActionPreference = 'Stop'
+#PS# Add-Type -AssemblyName System.Runtime.Serialization
+#PS# 
+#PS# function ConvertTo-JsonBytes($obj, [type]$type) {
+#PS#     $serializer = New-Object System.Runtime.Serialization.Json.DataContractJsonSerializer($type)
+#PS#     $stream = New-Object System.IO.MemoryStream
+#PS#     $serializer.WriteObject($stream, $obj)
+#PS#     $bytes = $stream.ToArray()
+#PS#     $stream.Dispose()
+#PS#     return ,$bytes
+#PS# }
+#PS# 
+#PS# function ConvertFrom-JsonBytes([byte[]]$bytes, [type]$type) {
+#PS#     $serializer = New-Object System.Runtime.Serialization.Json.DataContractJsonSerializer($type)
+#PS#     $stream = New-Object System.IO.MemoryStream(, $bytes)
+#PS#     try { return $serializer.ReadObject($stream) }
+#PS#     finally { $stream.Dispose() }
+#PS# }
+#PS# 
+#PS# $source = @'
+#PS# using System.Runtime.Serialization;
+#PS# [DataContract]
+#PS# public class RemoteAuth {
+#PS#   [DataMember(Name="type")] public string type {get;set;}
+#PS#   [DataMember(Name="id")] public string id {get;set;}
+#PS#   [DataMember(Name="token")] public string token {get;set;}
+#PS# }
+#PS# [DataContract]
+#PS# public class RemoteMessage {
+#PS#   [DataMember(Name="type")] public string type {get;set;}
+#PS#   [DataMember(Name="to", EmitDefaultValue=false)] public string to {get;set;}
+#PS#   [DataMember(Name="text", EmitDefaultValue=false)] public string text {get;set;}
+#PS# }
+#PS# [DataContract]
+#PS# public class RemoteResponse {
+#PS#   [DataMember(Name="type")] public string type {get;set;}
+#PS#   [DataMember(Name="id", EmitDefaultValue=false)] public string id {get;set;}
+#PS#   [DataMember(Name="from", EmitDefaultValue=false)] public string from {get;set;}
+#PS#   [DataMember(Name="to", EmitDefaultValue=false)] public string to {get;set;}
+#PS#   [DataMember(Name="text", EmitDefaultValue=false)] public string text {get;set;}
+#PS# }
+#PS# '@
+#PS# Add-Type -TypeDefinition $source -ReferencedAssemblies System.Runtime.Serialization.dll
+#PS# 
+#PS# try {
+#PS#     $url = (Read-Host 'URL Render (https://remote-ppij.onrender.com)').Trim().TrimEnd('/')
+#PS#     if ($url -notmatch '^https://[a-zA-Z0-9.-]+$') { throw 'URL HTTPS invalide.' }
+#PS# 
+#PS#     $id = (Read-Host 'Nom de cette machine (PC1 ou PC2)').Trim()
+#PS#     if ($id -notmatch '^[a-zA-Z0-9_-]{1,32}$') { throw 'Nom invalide.' }
+#PS# 
+#PS#     $token = Read-Host 'Secret REMOTE_TOKEN'
+#PS#     if ([string]::IsNullOrWhiteSpace($token)) { throw 'Secret vide.' }
+#PS# 
+#PS#     $ws = New-Object System.Net.WebSockets.ClientWebSocket
+#PS#     $uri = [Uri]($url -replace '^https:', 'wss:' )
+#PS#     $uri = New-Object UriBuilder($uri)
+#PS#     $uri.Path = '/ws'
+#PS#     $ws.ConnectAsync($uri.Uri, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+#PS# 
+#PS#     $auth = New-Object RemoteAuth
+#PS#     $auth.type = 'auth'; $auth.id = $id; $auth.token = $token
+#PS#     $bytes = ConvertTo-JsonBytes $auth ([RemoteAuth])
+#PS#     $ws.SendAsync([ArraySegment[byte]]::new($bytes), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+#PS# 
+#PS#     Write-Host 'Connexion en cours...' -ForegroundColor Cyan
+#PS#     $buffer = New-Object byte[] 8192
+#PS#     $result = $ws.ReceiveAsync([ArraySegment[byte]]::new($buffer), [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+#PS#     $first = New-Object byte[] $result.Count
+#PS#     [Array]::Copy($buffer, $first, $result.Count)
+#PS#     $response = ConvertFrom-JsonBytes $first ([RemoteResponse])
+#PS#     if ($response.type -ne 'ready') { throw 'Authentification refusee par le serveur.' }
+#PS# 
+#PS#     Write-Host "REMOTE connecte sous $id" -ForegroundColor Green
+#PS#     Write-Host 'Envoi : /to PC2 Bonjour !'
+#PS#     Write-Host 'Quitter : /quit'
+#PS# 
+#PS#     $receiveTask = [System.Threading.Tasks.Task]::Run([Action]{
+#PS#         while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+#PS#             try {
+#PS#                 $buf = New-Object byte[] 8192
+#PS#                 $ms = New-Object System.IO.MemoryStream
+#PS#                 do {
+#PS#                     $r = $ws.ReceiveAsync([ArraySegment[byte]]::new($buf), [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+#PS#                     if ($r.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) { return }
+#PS#                     $ms.Write($buf, 0, $r.Count)
+#PS#                 } while (-not $r.EndOfMessage)
+#PS#                 $bytes = $ms.ToArray(); $ms.Dispose()
+#PS#                 $msg = ConvertFrom-JsonBytes $bytes ([RemoteResponse])
+#PS#                 if ($msg.type -eq 'message') { [Console]::WriteLine("`n[$($msg.from)] $($msg.text)") }
+#PS#                 elseif ($msg.type -eq 'sent') { [Console]::WriteLine("Message envoye a $($msg.to).") }
+#PS#                 elseif ($msg.type -eq 'error') { [Console]::WriteLine("Erreur : $($msg.text)") }
+#PS#             } catch { return }
+#PS#         }
+#PS#     })
+#PS# 
+#PS#     while ($ws.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+#PS#         $line = [Console]::ReadLine()
+#PS#         if ($null -eq $line -or $line.Trim() -eq '/quit') { break }
+#PS#         if ($line -notmatch '^/to\s+([a-zA-Z0-9_-]{1,32})\s+(.+)$') {
+#PS#             Write-Host 'Format : /to PC2 Bonjour !'; continue
+#PS#         }
+#PS#         $msg = New-Object RemoteMessage
+#PS#         $msg.type = 'message'; $msg.to = $Matches[1]; $msg.text = $Matches[2]
+#PS#         $bytes = ConvertTo-JsonBytes $msg ([RemoteMessage])
+#PS#         $ws.SendAsync([ArraySegment[byte]]::new($bytes), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+#PS#     }
+#PS#     $ws.Dispose()
+#PS# } catch {
+#PS#     Write-Host "Erreur REMOTE : $($_.Exception.Message)" -ForegroundColor Red
+#PS#     exit 1
+#PS# }
