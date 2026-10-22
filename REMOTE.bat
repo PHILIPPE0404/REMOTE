@@ -99,7 +99,7 @@ exit /b
 #CS#       Console.WriteLine("Connecte. Tu peux discuter avec les autres.");
 #CS#       Console.WriteLine("Tape un message puis Entree. /quit pour quitter.");
 #CS#
-#CS#       Task receiver = Task.Run(() => Receive()).Unwrap();
+#CS#       Task receiver = Task.Run(async () => await Receive());
 #CS#       while (ws.State == WebSocketState.Open) {
 #CS#         string line = Console.ReadLine();
 #CS#         if (line == null || line.Trim() == "/quit") break;
