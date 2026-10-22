@@ -1,26 +1,16 @@
 
 const express = require("express");
 const http = require("http");
-const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
-const crypto = require("crypto");
 
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ noServer: true });
-
-const PORT = process.env.PORT || 10000;
-const TOKEN = process.env.REMOTE_TOKEN;
 const clients = new Map();
+const PORT = process.env.PORT || 10000;
 
-if (!TOKEN || TOKEN.length < 32) {
-  throw new Error("Configure REMOTE_TOKEN (32 caracteres minimum).");
-}
-
-app.get("/", (_req, res) => {
-  res.send("REMOTE server is online.");
-});
+app.get("/", (_req, res) => res.send("REMOTE chat is online."));
 
 app.get("/REMOTE.bat", (_req, res) => {
   res.type("application/octet-stream");
@@ -29,104 +19,84 @@ app.get("/REMOTE.bat", (_req, res) => {
 });
 
 server.on("upgrade", (req, socket, head) => {
-  if (req.url !== "/ws") {
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, ws => {
-    wss.emit("connection", ws);
-  });
+  if (req.url !== "/ws") return socket.destroy();
+  wss.handleUpgrade(req, socket, head, ws => wss.emit("connection", ws));
 });
-
-function sameSecret(value) {
-  if (typeof value !== "string") return false;
-  const a = Buffer.from(value);
-  const b = Buffer.from(TOKEN);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
 
 wss.on("connection", ws => {
   let id = null;
-  let authenticated = false;
-
-  const timer = setTimeout(() => {
-    if (!authenticated) ws.close(4001, "Authentication required");
-  }, 10000);
 
   ws.on("message", raw => {
-    if (raw.length > 8192) {
-      ws.close(1009, "Message too large");
-      return;
-    }
+    if (raw.length > 4096) return ws.close();
 
     let data;
     try {
       data = JSON.parse(raw.toString());
     } catch {
-      ws.close(1007, "Invalid JSON");
       return;
     }
 
-    if (!authenticated) {
-      if (
-        data.type !== "auth" ||
-        !sameSecret(data.token) ||
-        typeof data.id !== "string" ||
-        !/^[a-zA-Z0-9_-]{1,32}$/.test(data.id)
-      ) {
-        ws.close(4003, "Authentication refused");
-        return;
+    if (!id) {
+      if (data.type !== "join" ||
+          typeof data.id !== "string" ||
+          !/^[A-Za-z0-9_-]{1,32}$/.test(data.id)) {
+        return ws.close();
       }
 
       id = data.id;
-      authenticated = true;
-      clearTimeout(timer);
-
-      if (clients.has(id)) {
-        clients.get(id).close(4002, "Session replaced");
-      }
-
       clients.set(id, ws);
       ws.send(JSON.stringify({ type: "ready", id }));
-      console.log("Connected:", id);
+
+      const notice = JSON.stringify({
+        type: "message",
+        from: "REMOTE",
+        text: id + " a rejoint le salon."
+      });
+
+      for (const [otherId, client] of clients) {
+        if (otherId !== id && client.readyState === WebSocket.OPEN) {
+          client.send(notice);
+        }
+      }
+      console.log("Salon :", id);
       return;
     }
 
-    if (
-      data.type !== "message" ||
-      typeof data.to !== "string" ||
-      !/^[a-zA-Z0-9_-]{1,32}$/.test(data.to) ||
-      typeof data.text !== "string" ||
-      !data.text.trim() ||
-      data.text.length > 4000
-    ) return;
+    if (data.type !== "message" ||
+        typeof data.text !== "string" ||
+        !data.text.trim() ||
+        data.text.length > 2000) return;
 
-    const recipient = clients.get(data.to);
+    const message = JSON.stringify({
+      type: "message",
+      from: id,
+      text: data.text.trim().slice(0, 2000)
+    });
 
-    if (recipient && recipient.readyState === WebSocket.OPEN) {
-      recipient.send(JSON.stringify({
-        type: "message",
-        from: id,
-        text: data.text
-      }));
-      ws.send(JSON.stringify({ type: "sent", to: data.to }));
-    } else {
-      ws.send(JSON.stringify({
-        type: "error",
-        text: "Destinataire non connecte."
-      }));
+    for (const client of clients.values()) {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
     }
   });
 
   ws.on("close", () => {
-    clearTimeout(timer);
-    if (id && clients.get(id) === ws) clients.delete(id);
+    if (id && clients.get(id) === ws) {
+      clients.delete(id);
+      const notice = JSON.stringify({
+        type: "message",
+        from: "REMOTE",
+        text: id + " a quitte le salon."
+      });
+      for (const client of clients.values()) {
+        if (client.readyState === WebSocket.OPEN) client.send(notice);
+      }
+    }
   });
 
   ws.on("error", () => {});
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("REMOTE listening on port " + PORT);
-});
+server.listen(PORT, "0.0.0.0", () =>
+  console.log("REMOTE chat listening on " + PORT)
+);
